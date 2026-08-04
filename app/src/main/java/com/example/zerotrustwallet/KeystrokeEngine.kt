@@ -1,46 +1,49 @@
 package com.example.zerotrustwallet
 
-class KeystrokeEngine {
-    // Edge Memory: Stores the raw temporal features locally
-    private val flightTimes = mutableListOf<Long>()
-    private var backspaceCount = 0
-    private var lastKeyTimestamp = 0L
+class KeystrokeFeatureExtractor {
+    private var lastInputTime: Long = 0L
+    private var previousTextLength: Int = 0
 
-    fun recordKeyPress(isBackspace: Boolean) {
-        val currentTimestamp = System.currentTimeMillis()
+    // Arrays to hold the temporal features for the LSTM
+    private val flightTimes = mutableListOf<Double>()
+    private val errorCorrectionSignature = mutableListOf<Int>() // 1 for backspace, 0 for normal typing
 
-        if (isBackspace) {
-            backspaceCount++
-            // Reset timing for the next key to avoid massive flight times during deletions
-            lastKeyTimestamp = currentTimestamp
-            return
-        }
+    fun recordTextChange(currentText: String) {
+        val currentTime = System.currentTimeMillis()
+        val currentLength = currentText.length
 
-        if (lastKeyTimestamp != 0L) {
-            val flightTime = currentTimestamp - lastKeyTimestamp
-            flightTimes.add(flightTime)
+        // Track the dynamic error correction signature
+        if (currentLength < previousTextLength) {
+            // A backspace/deletion occurred
+            errorCorrectionSignature.add(1)
+        } else if (currentLength > previousTextLength) {
+            // Normal character added
+            errorCorrectionSignature.add(0)
 
-            // Cap the array to prevent memory leaks during long sessions
-            if (flightTimes.size > 100) {
-                flightTimes.removeAt(0)
+            // Calculate temporal flight time between key additions
+            if (lastInputTime != 0L) {
+                val flightTime = (currentTime - lastInputTime).toDouble()
+                flightTimes.add(flightTime)
             }
         }
 
-        lastKeyTimestamp = currentTimestamp
+        previousTextLength = currentLength
+        lastInputTime = currentTime
     }
 
-    // This will eventually feed Sakith's LSTM model
-    fun getInteractionFingerprint(): Map<String, Any> {
+    // Packages the extracted features to be fed into the LSTM
+    fun exportLSTMFeatures(): Map<String, Any> {
         return mapOf(
-            "average_flight_time" to if (flightTimes.isNotEmpty()) flightTimes.average() else 0.0,
-            "error_correction_count" to backspaceCount,
-            "raw_flight_sequence" to flightTimes.toList()
+            "temporalSequence" to flightTimes.toList(),
+            "errorSignature" to errorCorrectionSignature.toList(),
+            "sequenceLength" to flightTimes.size
         )
     }
 
-    fun resetSession() {
+    fun wipeSession() {
         flightTimes.clear()
-        backspaceCount = 0
-        lastKeyTimestamp = 0L
+        errorCorrectionSignature.clear()
+        lastInputTime = 0L
+        previousTextLength = 0
     }
 }

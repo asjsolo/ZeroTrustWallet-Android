@@ -45,6 +45,9 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.DisposableEffect
 
 // Brand Colors
 val BrandBlue = Color(0xFF005DAA)
@@ -61,9 +64,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val navController = rememberNavController()
+                val context = LocalContext.current
 
                 // START THE KEYSTROKE ENGINE HERE
-                val keystrokeEngine = remember { KeystrokeEngine() }
+                val keystrokeEngine = remember { KeystrokeFeatureExtractor() }
+                val gestureExtractor = remember { GestureFeatureExtractor() }
+                val imuExtractor = remember { IMUFeatureExtractor(context) }
+                DisposableEffect(Unit) {
+                    imuExtractor.startListening() // Turn sensors ON
+                    onDispose {
+                        imuExtractor.stopListening()  // Turn sensors OFF
+                    }
+                }
 
                 // Shared App Memory
                 var registeredPhone by remember { mutableStateOf("") }
@@ -73,70 +85,116 @@ class MainActivity : ComponentActivity() {
                 var selectedBankForPayee by remember { mutableStateOf("") }
                 var selectedPayeeForTransfer by remember { mutableStateOf<SavedPayee?>(null) }
 
-                NavHost(
-                    navController = navController,
-                    startDestination = "login",
-                    enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(300)) },
-                    exitTransition = { fadeOut(animationSpec = tween(300)) },
-                    popEnterTransition = { fadeIn(animationSpec = tween(300)) },
-                    popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(300)) }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectDragGestures(
+                                onDrag = { change, dragAmount ->
+                                    // Capture continuous spatial movement (assuming ~16ms per frame for a standard 60Hz display)
+                                    gestureExtractor.recordGesture(
+                                        dragAmount = dragAmount,
+                                        durationMs = 16
+                                    )
+                                }
+                            )
+                        }
                 ) {
-                    composable("login") { ZeroTrustLoginScreen(navController, registeredPin) }
-                    composable("register") {
-                        ZeroTrustRegisterScreen(navController) { newPhone, newPin ->
-                            registeredPhone = newPhone; registeredPin = newPin
+
+                    NavHost(
+                        navController = navController,
+                        startDestination = "login",
+                        enterTransition = {
+                            slideIntoContainer(
+                                AnimatedContentTransitionScope.SlideDirection.Left,
+                                animationSpec = tween(300)
+                            )
+                        },
+                        exitTransition = { fadeOut(animationSpec = tween(300)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(300)) },
+                        popExitTransition = {
+                            slideOutOfContainer(
+                                AnimatedContentTransitionScope.SlideDirection.Right,
+                                animationSpec = tween(300)
+                            )
                         }
-                    }
-                    composable("dashboard") { ZeroTrustDashboardScreen(navController) }
-
-                    // --- NEW: Send Money Flow ---
-                    composable("send_money") { SendMoneyScreen(navController, keystrokeEngine) }
-                    composable("send_money_detail/{mobile}") { backStackEntry ->
-                        val mobile = backStackEntry.arguments?.getString("mobile") ?: ""
-                        SendMoneyDetailScreen(navController, mobile, keystrokeEngine)
-                    }
-
-                    // --- NEW: Request Money Flow ---
-                    composable("request_money") { RequestLandingScreen(navController) }
-                    composable("request_money_form") { RequestMoneyFormScreen(navController, keystrokeEngine) }
-
-                    // --- NEW: My QR Flow ---
-                    composable("my_qr") { MyQRLandingScreen(navController) }
-                    composable("my_qr_generated") { MyQRGeneratedScreen(navController) }
-
-                    // --- Transfer Routes ---
-                    composable("transfer_money") { TransferMoneyScreen(navController, selectedPayeeForTransfer) }
-                    composable("select_payee") {
-                        SelectPayeeScreen(navController, savedPayees) { payee ->
-                            selectedPayeeForTransfer = payee
-                            navController.popBackStack()
+                    ) {
+                        composable("login") { ZeroTrustLoginScreen(navController, registeredPin) }
+                        composable("register") {
+                            ZeroTrustRegisterScreen(navController) { newPhone, newPin ->
+                                registeredPhone = newPhone; registeredPin = newPin
+                            }
                         }
-                    }
-                    composable("add_payee") {
-                        // Passing the keystrokeEngine into the screen right here
-                        AddPayeeScreen(navController, selectedBankForPayee, keystrokeEngine) { newPayee ->
-                            savedPayees = savedPayees + newPayee
-                            selectedBankForPayee = "" // Reset
-                            navController.popBackStack()
-                        }
-                    }
+                        composable("dashboard") { ZeroTrustDashboardScreen(navController) }
 
-                    // Biometric Evaluator
-                    composable("zk_biometric_transfer") { ZeroTrustBiometricScreen(navController) }
-
-                    // Add Money Flows
-                    composable("choose_add_option") { ChooseAddOptionScreen(navController) }
-                    composable("add_card") { AddCardScreen(navController) }
-                    composable("add_bank_wallet") { AddBankScreen(navController, "Add Bank Account") { navController.popBackStack() } }
-                    composable("add_bank_payee") {
-                        AddBankScreen(navController, "Select Bank") { bank ->
-                            selectedBankForPayee = bank
-                            navController.popBackStack()
+                        // --- NEW: Send Money Flow ---
+                        composable("send_money") { SendMoneyScreen(navController, keystrokeEngine) }
+                        composable("send_money_detail/{mobile}") { backStackEntry ->
+                            val mobile = backStackEntry.arguments?.getString("mobile") ?: ""
+                            SendMoneyDetailScreen(navController, mobile, keystrokeEngine)
                         }
+
+                        // --- NEW: Request Money Flow ---
+                        composable("request_money") { RequestLandingScreen(navController) }
+                        composable("request_money_form") {
+                            RequestMoneyFormScreen(
+                                navController,
+                                keystrokeEngine
+                            )
+                        }
+
+                        // --- NEW: My QR Flow ---
+                        composable("my_qr") { MyQRLandingScreen(navController) }
+                        composable("my_qr_generated") { MyQRGeneratedScreen(navController) }
+
+                        // --- Transfer Routes ---
+                        composable("transfer_money") {
+                            TransferMoneyScreen(
+                                navController,
+                                selectedPayeeForTransfer
+                            )
+                        }
+                        composable("select_payee") {
+                            SelectPayeeScreen(navController, savedPayees) { payee ->
+                                selectedPayeeForTransfer = payee
+                                navController.popBackStack()
+                            }
+                        }
+                        composable("add_payee") {
+                            // Passing the keystrokeEngine into the screen right here
+                            AddPayeeScreen(
+                                navController,
+                                selectedBankForPayee,
+                                keystrokeEngine
+                            ) { newPayee ->
+                                savedPayees = savedPayees + newPayee
+                                selectedBankForPayee = "" // Reset
+                                navController.popBackStack()
+                            }
+                        }
+
+                        // Biometric Evaluator
+                        composable("zk_biometric_transfer") { ZeroTrustBiometricScreen(navController) }
+
+                        // Add Money Flows
+                        composable("choose_add_option") { ChooseAddOptionScreen(navController) }
+                        composable("add_card") { AddCardScreen(navController) }
+                        composable("add_bank_wallet") {
+                            AddBankScreen(
+                                navController,
+                                "Add Bank Account"
+                            ) { navController.popBackStack() }
+                        }
+                        composable("add_bank_payee") {
+                            AddBankScreen(navController, "Select Bank") { bank ->
+                                selectedBankForPayee = bank
+                                navController.popBackStack()
+                            }
+                        }
+                        composable("wallet") { WalletScreen(navController) }
+                        composable("history") { TransactionHistoryScreen(navController) }
+                        composable("notifications") { NotificationsScreen(navController) }
                     }
-                    composable("wallet") { WalletScreen(navController) }
-                    composable("history") { TransactionHistoryScreen(navController) }
-                    composable("notifications") { NotificationsScreen(navController) }
                 }
             }
         }
@@ -258,7 +316,7 @@ fun ZeroTrustRegisterScreen(navController: NavController, onRegisterSuccess: (St
 // --- 2. SEND MONEY FLOW ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SendMoneyScreen(navController: NavController, engine: KeystrokeEngine) {
+fun SendMoneyScreen(navController: NavController, engine: KeystrokeFeatureExtractor) {
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var mobileNumber by remember { mutableStateOf("") }
 
@@ -297,7 +355,7 @@ fun SendMoneyScreen(navController: NavController, engine: KeystrokeEngine) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SendMoneyDetailScreen(navController: NavController, targetMobile: String, engine: KeystrokeEngine) {
+fun SendMoneyDetailScreen(navController: NavController, targetMobile: String, engine: KeystrokeFeatureExtractor) {
     var amount by remember { mutableStateOf("") }
     var reference by remember { mutableStateOf("") }
     var showSuccess by remember { mutableStateOf(false) }
@@ -363,7 +421,7 @@ fun RequestLandingScreen(navController: NavController) {
 }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RequestMoneyFormScreen(navController: NavController, engine: KeystrokeEngine) {
+fun RequestMoneyFormScreen(navController: NavController, engine: KeystrokeFeatureExtractor) {
     var mobile by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
     var reference by remember { mutableStateOf("") }
@@ -611,7 +669,7 @@ fun SelectPayeeScreen(navController: NavController, payees: List<SavedPayee>, on
 fun AddPayeeScreen(
     navController: NavController,
     selectedBank: String,
-    engine: KeystrokeEngine, // Added the engine parameter here
+    engine: KeystrokeFeatureExtractor, // Added the engine parameter here
     onSave: (SavedPayee) -> Unit
 ) {
     var account by remember { mutableStateOf("") }
@@ -961,7 +1019,7 @@ fun ZeroTrustTextField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
-    engine: KeystrokeEngine,
+    engine: KeystrokeFeatureExtractor, // Updated type
     modifier: Modifier = Modifier,
     isPassword: Boolean = false,
     leadingIcon: @Composable (() -> Unit)? = null,
@@ -970,8 +1028,9 @@ fun ZeroTrustTextField(
     TextField(
         value = value,
         onValueChange = { newValue ->
-            val isBackspace = newValue.length < value.length
-            engine.recordKeyPress(isBackspace)
+            // Pass the entire new string to the extractor for LSTM processing
+            engine.recordTextChange(newValue)
+
             onValueChange(newValue)
         },
         label = { Text(label, color = Color.Gray) },
