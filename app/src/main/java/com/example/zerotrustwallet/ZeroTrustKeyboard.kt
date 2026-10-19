@@ -17,11 +17,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-
-/**
- * Custom In-App Zero-Trust Keyboard (Component 1 - Sakith)
- * Intercepts raw pointer down/up events at the Compose UI layer to prevent OS keyboard spoofing.
- */
 enum class KeyboardMode { ALPHABET, SYMBOLS }
 
 
