@@ -1,6 +1,9 @@
 package com.example.zerotrustwallet
 
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 // Data class to feed the UI matrix
 data class TrustMatrix(
@@ -16,27 +19,68 @@ class ZkFusionEngine(
     private val gestureExtractor: GestureFeatureExtractor,
     private val imuExtractor: IMUFeatureExtractor
 ) {
-    /**
-     * Fuses the telemetry from all three microservices to calculate a unified Zero-Trust score.
-     */
+    // Required to receive the ID from MainActivity upon login
+    var activeUserId: String? = null
+
+    var liveSessionScore: Float = 100f
+        private set
+
+    private val lockdownThreshold = 75f
+
+    init {
+        keystrokeExtractor.onBatchReady = { batchData ->
+            processLiveKeystrokeBatch(batchData)
+        }
+    }
+
+    private fun processLiveKeystrokeBatch(batchData: Map<String, Any>) {
+        val currentUserId = activeUserId
+
+        // FIX: Silently ignore typing if the user isn't logged in yet (like on the login/register screens)
+        // Using isNullOrEmpty() catches both nulls and blank strings without throwing red errors.
+        if (currentUserId.isNullOrEmpty()) {
+            return
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                Log.d("ZkFusionEngine", "Intercepted 15 keys. Sending batch to Node.js ZK Engine...")
+
+                // Make the actual network call to your backend
+                val request = com.example.zerotrustwallet.network.VerifyKeystrokeRequest(
+                    userId = currentUserId,
+                    batchData = batchData
+                )
+
+                val response = com.example.zerotrustwallet.network.ApiClient.retrofitService.verifyKeystrokes(request)
+
+                // Update the live score with the real calculation from your statistical engine
+                liveSessionScore = response.score
+
+                Log.d("ZkFusionEngine", "Live Trust Score updated to: $liveSessionScore%")
+
+                if (liveSessionScore < lockdownThreshold) {
+                    Log.e("ZkFusionEngine", "CRITICAL ANOMALY: Score dropped below $lockdownThreshold%.")
+                }
+            } catch (e: Exception) {
+                Log.e("ZkFusionEngine", "Batch evaluation failed: ${e.message}")
+            }
+        }
+    }
+
     fun evaluateTrustMatrix(): TrustMatrix {
-        // 1. Pull feature matrices from the team's extractors
         val keystrokeFeatures = keystrokeExtractor.exportLSTMFeatures()
         val gestureFeatures = gestureExtractor.exportCNNFeatures()
         val imuFeatures = imuExtractor.exportMotionFeatures()
 
-        // 2. Evaluate Keystroke Dynamics (Sakith's Engine)
         val keySequenceLength = keystrokeFeatures["sequenceLength"] as? Int ?: 0
         val keystrokeScore = if (keySequenceLength > 2) 92f else 75f
 
-        // 3. Evaluate Spatial Gestures (Kalani's Engine)
         val gestureScore = if (gestureFeatures.isNotEmpty()) 88f else 70f
 
-        // 4. Evaluate IMU Motion (Oshani's Engine)
         val imuDataPoints = imuFeatures["totalDataPoints"] as? Int ?: 0
         val imuScore = if (imuDataPoints > 10) 95f else 80f
 
-        // 5. Final Fusion Calculation
         val finalScore = (keystrokeScore + gestureScore + imuScore) / 3f
         val isAuthorized = finalScore >= 80f
 
@@ -46,7 +90,7 @@ class ZkFusionEngine(
     }
 
     /**
-     * Simulates the generation of a Zero-Knowledge Proof for the backend postgres ledger.
+     * Simulates the generation of a Zero-Knowledge Proof for the backend Postgres ledger.
      */
     fun generateCryptographicProof(transactionRef: String): String {
         val matrix = evaluateTrustMatrix()

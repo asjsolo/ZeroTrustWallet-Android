@@ -55,6 +55,47 @@ val BrandYellow = Color(0xFFFFD600)
 val BrandLightBlue = Color(0xFF2E86C1)
 val BrandBackground = Color(0xFFF5F5F5)
 
+// --- GLOBAL ZERO-TRUST KEYBOARD CONTROLLER ---
+class GlobalKeyboardState {
+    var isVisible by mutableStateOf(false)
+    var activeInputText by mutableStateOf("")
+    var onUpdateText: ((String) -> Unit)? by mutableStateOf(null)
+
+    fun openKeyboard(currentText: String, onUpdate: (String) -> Unit) {
+        activeInputText = currentText
+        onUpdateText = onUpdate
+        isVisible = true
+    }
+
+    fun closeKeyboard() {
+        isVisible = false
+        onUpdateText = null
+    }
+
+    fun handleKeyPress(key: String) {
+        when (key) {
+            "DEL" -> {
+                if (activeInputText.isNotEmpty()) {
+                    activeInputText = activeInputText.dropLast(1)
+                    onUpdateText?.invoke(activeInputText)
+                }
+            }
+            "SPACE" -> {
+                activeInputText += " "
+                onUpdateText?.invoke(activeInputText)
+            }
+            else -> {
+                if (key.length == 1) { // Filter out command keys like SHIFT or ABC
+                    activeInputText += key
+                    onUpdateText?.invoke(activeInputText)
+                }
+            }
+        }
+    }
+}
+
+val LocalZeroTrustKeyboard = staticCompositionLocalOf { GlobalKeyboardState() }
+
 // Data Class for Memory
 data class SavedPayee(val name: String, val account: String, val bank: String, val mobile: String)
 
@@ -66,123 +107,134 @@ class MainActivity : ComponentActivity() {
                 val navController = rememberNavController()
                 val context = LocalContext.current
 
-                // --- 1. INITIALIZE THE TEAM'S SENSORS ---
+                // 1. Initialize Sensors & Fusion
                 val keystrokeExtractor = remember { KeystrokeFeatureExtractor() }
                 val gestureExtractor = remember { GestureFeatureExtractor() }
                 val imuExtractor = remember { IMUFeatureExtractor(context) }
-
-                // Initialize the Master Brain
                 val zkFusionEngine = remember { ZkFusionEngine(keystrokeExtractor, gestureExtractor, imuExtractor) }
 
-                // Manage IMU lifecycle
+                // 2. Global Keyboard State
+                val keyboardState = remember { GlobalKeyboardState() }
+
                 DisposableEffect(Unit) {
                     imuExtractor.startListening()
                     onDispose { imuExtractor.stopListening() }
                 }
 
-                // Shared App Memory
                 var registeredPhone by remember { mutableStateOf("") }
                 var registeredPin by remember { mutableStateOf("1234") }
-
                 var savedPayees by remember { mutableStateOf(listOf<SavedPayee>()) }
                 var selectedBankForPayee by remember { mutableStateOf("") }
                 var selectedPayeeForTransfer by remember { mutableStateOf<SavedPayee?>(null) }
 
-                // --- 2. CAPTURE GLOBAL GESTURES ---
-                Box(modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            val duration = change.uptimeMillis - change.previousUptimeMillis
-                            gestureExtractor.recordGesture(dragAmount, duration)
+                CompositionLocalProvider(LocalZeroTrustKeyboard provides keyboardState) {
+
+                    // --- 2. CAPTURE GLOBAL GESTURES ---
+                    Box(modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectDragGestures { change, dragAmount -> change.consume()
+                                val duration = change.uptimeMillis - change.previousUptimeMillis
+                                gestureExtractor.recordGesture(dragAmount, duration)
+                            }
                         }
-                    }
-                ) {
-                    NavHost(
-                        navController = navController,
-                        startDestination = "login",
-                        enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, animationSpec = tween(300)) },
-                        exitTransition = { fadeOut(animationSpec = tween(300)) },
-                        popEnterTransition = { fadeIn(animationSpec = tween(300)) },
-                        popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, animationSpec = tween(300)) }
                     ) {
-                        composable("login") { ZeroTrustLoginScreen(navController) }
+                        // --- NAV HOST CONTENT ---
+                        NavHost(
+                            navController = navController,
+                            startDestination = "login",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(bottom = if (keyboardState.isVisible) 270.dp else 0.dp) // Auto-shrink screens when keyboard shows
+                        ) {
+// ... (rest of your NavHost and Keyboard Overlay stays exactly the same)
+                            composable("login") { ZeroTrustLoginScreen(navController, keystrokeExtractor){ userId ->
+                                    zkFusionEngine.activeUserId = userId
+                                }
+                            }
+                            composable("register") { ZeroTrustRegisterScreen(navController, keystrokeExtractor){ newPhone, newPin ->
+                                    registeredPhone = newPhone; registeredPin = newPin
+                                }
+                            }
+                            composable("enroll_keystroke/{userId}") { backStackEntry ->
+                                val userId = backStackEntry.arguments?.getString("userId") ?: ""
+                                EnrollmentKeystrokeScreen(navController, userId, keystrokeExtractor)
+                            }
+                            composable("enroll_gesture/{userId}") { backStackEntry ->
+                                val userId = backStackEntry.arguments?.getString("userId") ?: ""
+                                EnrollmentGestureScreen(navController, userId, gestureExtractor)
+                            }
+                            composable("enroll_imu/{userId}") { backStackEntry ->
+                                val userId = backStackEntry.arguments?.getString("userId") ?: ""
+                                EnrollmentIMUScreen(navController, userId, keystrokeExtractor, gestureExtractor, imuExtractor)
+                            }
+                            composable("dashboard") { ZeroTrustDashboardScreen(navController) }
+                            composable("send_money") { SendMoneyScreen(navController, keystrokeExtractor) }
+                            composable("send_money_detail/{mobile}") { backStackEntry ->
+                                val mobile = backStackEntry.arguments?.getString("mobile") ?: ""
+                                SendMoneyDetailScreen(navController, mobile, keystrokeExtractor)
+                            }
+                            composable("request_money") { RequestLandingScreen(navController) }
+                            composable("request_money_form") { RequestMoneyFormScreen(navController, keystrokeExtractor) }
+                            composable("my_qr") { MyQRLandingScreen(navController) }
+                            composable("my_qr_generated") { MyQRGeneratedScreen(navController) }
+                            composable("transfer_money") { TransferMoneyScreen(navController, selectedPayeeForTransfer, keystrokeExtractor) }
+                            composable("select_payee") {
+                                SelectPayeeScreen(navController, savedPayees) { payee ->
+                                    selectedPayeeForTransfer = payee
+                                    navController.popBackStack()
+                                }
+                            }
+                            composable("add_payee") {
+                                AddPayeeScreen(navController, selectedBankForPayee, keystrokeExtractor) { newPayee ->
+                                    savedPayees = savedPayees + newPayee
+                                    selectedBankForPayee = ""
+                                    navController.popBackStack()
+                                }
+                            }
+                            composable("zk_biometric_transfer") { ZeroTrustBiometricScreen(navController, zkFusionEngine) }
+                            composable("choose_add_option") { ChooseAddOptionScreen(navController) }
+                            composable("add_card") { AddCardScreen(navController) }
+                            composable("add_bank_wallet") { AddBankScreen(navController, "Add Bank Account") { navController.popBackStack() } }
+                            composable("add_bank_payee") {
+                                AddBankScreen(navController, "Select Bank") { bank ->
+                                    selectedBankForPayee = bank
+                                    navController.popBackStack()
+                                }
+                            }
+                            composable("wallet") { WalletScreen(navController) }
+                            composable("history") { TransactionHistoryScreen(navController) }
+                            composable("notifications") { NotificationsScreen(navController) }
+                        }
 
-                        composable("register") {
-                            ZeroTrustRegisterScreen(navController) { newPhone, newPin ->
-                                registeredPhone = newPhone; registeredPin = newPin
+                        // --- GLOBAL BOTTOM KEYBOARD OVERLAY ---
+                        if (keyboardState.isVisible) {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .background(Color(0xFFEBF5FB))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFFD4E6F1))
+                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    Text(
+                                        text = "DONE",
+                                        fontWeight = FontWeight.Bold,
+                                        color = BrandBlue,
+                                        modifier = Modifier.clickable { keyboardState.closeKeyboard() }
+                                    )
+                                }
+                                ZeroTrustKeyboard(
+                                    engine = keystrokeExtractor,
+                                    onKeyPressed = { key -> keyboardState.handleKeyPress(key) }
+                                )
                             }
                         }
-
-                        // --- 3-STEP ENROLLMENT PIPELINE ---
-                        composable("enroll_keystroke/{userId}") { backStackEntry ->
-                            val userId = backStackEntry.arguments?.getString("userId") ?: ""
-                            EnrollmentKeystrokeScreen(navController, userId, keystrokeExtractor)
-                        }
-
-                        composable("enroll_gesture/{userId}") { backStackEntry ->
-                            val userId = backStackEntry.arguments?.getString("userId") ?: ""
-                            EnrollmentGestureScreen(navController, userId, gestureExtractor)
-                        }
-
-                        composable("enroll_imu/{userId}") { backStackEntry ->
-                            val userId = backStackEntry.arguments?.getString("userId") ?: ""
-                            EnrollmentIMUScreen(navController, userId, keystrokeExtractor, gestureExtractor, imuExtractor)
-                        }
-                        // ----------------------------------
-
-                        composable("dashboard") { ZeroTrustDashboardScreen(navController) }
-
-
-
-
-                        // --- SEND MONEY FLOW (Wired to Keystroke) ---
-                        composable("send_money") { SendMoneyScreen(navController, keystrokeExtractor) }
-                        composable("send_money_detail/{mobile}") { backStackEntry ->
-                            val mobile = backStackEntry.arguments?.getString("mobile") ?: ""
-                            SendMoneyDetailScreen(navController, mobile, keystrokeExtractor)
-                        }
-
-                        // --- REQUEST MONEY FLOW (Wired to Keystroke) ---
-                        composable("request_money") { RequestLandingScreen(navController) }
-                        composable("request_money_form") { RequestMoneyFormScreen(navController, keystrokeExtractor) }
-
-                        // --- MY QR FLOW ---
-                        composable("my_qr") { MyQRLandingScreen(navController) }
-                        composable("my_qr_generated") { MyQRGeneratedScreen(navController) }
-
-                        // --- TRANSFER ROUTES (Wired to Keystroke) ---
-                        composable("transfer_money") { TransferMoneyScreen(navController, selectedPayeeForTransfer, keystrokeExtractor) }
-                        composable("select_payee") {
-                            SelectPayeeScreen(navController, savedPayees) { payee ->
-                                selectedPayeeForTransfer = payee
-                                navController.popBackStack()
-                            }
-                        }
-                        composable("add_payee") {
-                            AddPayeeScreen(navController, selectedBankForPayee, keystrokeExtractor) { newPayee ->
-                                savedPayees = savedPayees + newPayee
-                                selectedBankForPayee = ""
-                                navController.popBackStack()
-                            }
-                        }
-
-                        // --- THE ZK FUSION EVALUATION SCREEN ---
-                        composable("zk_biometric_transfer") { ZeroTrustBiometricScreen(navController, zkFusionEngine) }
-
-                        // --- ADD MONEY FLOWS ---
-                        composable("choose_add_option") { ChooseAddOptionScreen(navController) }
-                        composable("add_card") { AddCardScreen(navController) }
-                        composable("add_bank_wallet") { AddBankScreen(navController, "Add Bank Account") { navController.popBackStack() } }
-                        composable("add_bank_payee") {
-                            AddBankScreen(navController, "Select Bank") { bank ->
-                                selectedBankForPayee = bank
-                                navController.popBackStack()
-                            }
-                        }
-                        composable("wallet") { WalletScreen(navController) }
-                        composable("history") { TransactionHistoryScreen(navController) }
-                        composable("notifications") { NotificationsScreen(navController) }
                     }
                 }
             }
@@ -190,7 +242,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- CORE REUSABLE ZERO-TRUST TEXT FIELD (WIRED TO SAKITH'S ENGINE) ---
+// --- CORE REUSABLE ZERO-TRUST TEXT FIELD ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ZeroTrustTextField(
@@ -201,28 +253,49 @@ fun ZeroTrustTextField(
     modifier: Modifier = Modifier,
     isPassword: Boolean = false,
     leadingIcon: @Composable (() -> Unit)? = null,
-    trailingIcon: @Composable (() -> Unit)? = null
+    trailingIcon: @Composable (() -> Unit)? = null,
+    isWhiteText: Boolean = false // FIX: Added a toggle for blue backgrounds!
 ) {
-    TextField(
-        value = value,
-        onValueChange = { newValue ->
-            engine.recordTextChange(newValue) // Records flight times and backspaces!
-            onValueChange(newValue)
-        },
-        label = { Text(label, color = Color.Gray) },
-        leadingIcon = leadingIcon,
-        trailingIcon = trailingIcon,
-        visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = Color.Transparent,
-            unfocusedContainerColor = Color.Transparent,
-            focusedIndicatorColor = BrandBlue,
-            unfocusedIndicatorColor = Color.LightGray,
-            focusedTextColor = BrandBlue,
-            unfocusedTextColor = Color.DarkGray
-        ),
-        modifier = modifier.fillMaxWidth()
-    )
+    val keyboardState = LocalZeroTrustKeyboard.current
+    val isFocused = keyboardState.isVisible && keyboardState.onUpdateText == onValueChange
+
+    // Dynamic Colors based on the background
+    val activeTextColor = if (isWhiteText) Color.White else BrandBlue
+    val inactiveLineColor = if (isWhiteText) Color.White.copy(alpha = 0.5f) else Color.LightGray
+    val currentLabelColor = if (isWhiteText) Color.White.copy(alpha = 0.8f) else Color.Gray
+
+    // Custom Password Masking (Keeps the cursor visible as a line)
+    val displayValue = if (isPassword) {
+        "•".repeat(value.length) + if (isFocused) "|" else ""
+    } else {
+        value + if (isFocused) "|" else ""
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { keyboardState.openKeyboard(value, onValueChange) }
+    ) {
+        TextField(
+            value = displayValue,
+            onValueChange = {},
+            readOnly = true,
+            enabled = false,
+            label = { Text(label, color = currentLabelColor) },
+            leadingIcon = leadingIcon,
+            trailingIcon = trailingIcon,
+            visualTransformation = VisualTransformation.None, // Handled manually above
+            colors = TextFieldDefaults.colors(
+                disabledContainerColor = Color.Transparent,
+                disabledIndicatorColor = if (isFocused) activeTextColor else inactiveLineColor,
+                disabledLabelColor = currentLabelColor,
+                disabledTextColor = activeTextColor,
+                disabledLeadingIconColor = activeTextColor,
+                disabledTrailingIconColor = activeTextColor
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 }
 
 // --- BIOMETRIC FUSION SCREEN (WIRED TO YOUR ENGINE) ---
@@ -297,7 +370,7 @@ fun ZeroTrustBiometricScreen(navController: NavController, fusionEngine: ZkFusio
 // --- 1. LOGIN & REGISTER SCREENS ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ZeroTrustLoginScreen(navController: NavController, onLoginSuccess: (String) -> Unit = {}) {
+fun ZeroTrustLoginScreen(navController: NavController, engine: KeystrokeFeatureExtractor, onLoginSuccess: (String) -> Unit = {}) {
     var email by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
 
@@ -319,84 +392,50 @@ fun ZeroTrustLoginScreen(navController: NavController, onLoginSuccess: (String) 
         }
         Spacer(modifier = Modifier.height(40.dp))
 
-        TextField(
-            value = email,
-            onValueChange = { email = it },
-            placeholder = { Text("Email Address", color = Color.White.copy(alpha = 0.7f)) },
-            leadingIcon = { Icon(Icons.Default.Email, contentDescription = "Email", tint = Color.White) },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
-                focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White,
-                cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White
-            ),
-            modifier = Modifier.fillMaxWidth()
+        ZeroTrustTextField(
+            value = email, onValueChange = { email = it }, label = "Email Address", engine = engine,
+            isWhiteText = true, // Force White UI
+            leadingIcon = { Icon(Icons.Default.Email, contentDescription = "Email", tint = Color.White) }
         )
         Spacer(modifier = Modifier.height(24.dp))
 
-        TextField(
-            value = pin,
-            onValueChange = { pin = it },
-            placeholder = { Text("Master PIN", color = Color.White.copy(alpha = 0.7f)) },
-            visualTransformation = PasswordVisualTransformation(),
-            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = "Lock", tint = Color.White) },
-            trailingIcon = { Icon(Icons.Default.Visibility, contentDescription = "Show", tint = Color.White) },
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
-                focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White,
-                cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White
-            ),
-            modifier = Modifier.fillMaxWidth()
+        ZeroTrustTextField(
+            value = pin, onValueChange = { pin = it }, label = "Master PIN", engine = engine,
+            isPassword = true, isWhiteText = true, // Force White UI
+            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = "Lock", tint = Color.White) }
         )
         Spacer(modifier = Modifier.height(30.dp))
 
         Button(
             onClick = {
-                if (email.isEmpty() || pin.isEmpty()) {
-                    Toast.makeText(context, "Enter your email and PIN", Toast.LENGTH_SHORT).show()
-                } else {
+                if (email.isEmpty() || pin.isEmpty()) { Toast.makeText(context, "Enter your email and PIN", Toast.LENGTH_SHORT).show() }
+                else {
                     coroutineScope.launch {
                         try {
-                            val request = com.example.zerotrustwallet.network.LoginRequest(
-                                email = email.trim(),
-                                pin = pin
-                            )
+                            val request = com.example.zerotrustwallet.network.LoginRequest(email = email.trim(), pin = pin)
                             val response = com.example.zerotrustwallet.network.ApiClient.retrofitService.loginUser(request)
 
                             if (response.user != null) {
-                                onLoginSuccess(response.user.id) // Saves the ID to memory
+                                onLoginSuccess(response.user.id)
                                 Toast.makeText(context, "Welcome, ${response.user.username}!", Toast.LENGTH_SHORT).show()
-                                navController.navigate("dashboard") {
-                                    popUpTo("login") { inclusive = true }
-                                }
+                                navController.navigate("dashboard") { popUpTo("login") { inclusive = true } }
                             }
-                        } catch (e: retrofit2.HttpException) {
-                            if (e.code() == 401) {
-                                Toast.makeText(context, "Invalid Email or PIN", Toast.LENGTH_LONG).show()
-                            } else {
-                                Toast.makeText(context, "Server Error: ${e.code()}", Toast.LENGTH_LONG).show()
-                            }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Network Error: ${e.message}", Toast.LENGTH_LONG).show()
-                        }
+                        } catch (e: Exception) { Toast.makeText(context, "Network Error: ${e.message}", Toast.LENGTH_LONG).show() }
                     }
                 }
             },
             colors = ButtonDefaults.buttonColors(containerColor = BrandLightBlue),
             modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(8.dp)
-        ) {
-            Text("SECURE LOGIN", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
+        ) { Text("SECURE LOGIN", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
 
         Spacer(modifier = Modifier.height(16.dp))
-        TextButton(onClick = { navController.navigate("register") }) {
-            Text("Don't have an account? Register", color = Color.White, fontSize = 14.sp)
-        }
+        TextButton(onClick = { navController.navigate("register") }) { Text("Don't have an account? Register", color = Color.White, fontSize = 14.sp) }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ZeroTrustRegisterScreen(navController: NavController, onRegisterSuccess: (String, String) -> Unit) {
+fun ZeroTrustRegisterScreen(navController: NavController, engine: KeystrokeFeatureExtractor, onRegisterSuccess: (String, String) -> Unit) {
     var username by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
@@ -413,13 +452,13 @@ fun ZeroTrustRegisterScreen(navController: NavController, onRegisterSuccess: (St
         Text("ZeroTrust", fontSize = 42.sp, fontWeight = FontWeight.ExtraBold, color = BrandYellow)
         Spacer(modifier = Modifier.height(40.dp))
 
-        TextField(value = username, onValueChange = { username = it }, placeholder = { Text("Username", color = Color.White.copy(alpha = 0.7f)) }, leadingIcon = { Icon(Icons.Default.Person, contentDescription = "Username", tint = Color.White) }, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White, cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White), modifier = Modifier.fillMaxWidth())
+        ZeroTrustTextField(value = username, onValueChange = { username = it }, label = "Username", engine = engine, isWhiteText = true, leadingIcon = { Icon(Icons.Default.Person, null, tint=Color.White) })
         Spacer(modifier = Modifier.height(24.dp))
-        TextField(value = email, onValueChange = { email = it }, placeholder = { Text("Email Address", color = Color.White.copy(alpha = 0.7f)) }, leadingIcon = { Icon(Icons.Default.Email, contentDescription = "Email", tint = Color.White) }, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White, cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White), modifier = Modifier.fillMaxWidth())
+        ZeroTrustTextField(value = email, onValueChange = { email = it }, label = "Email Address", engine = engine, isWhiteText = true, leadingIcon = { Icon(Icons.Default.Email, null, tint=Color.White) })
         Spacer(modifier = Modifier.height(24.dp))
-        TextField(value = pin, onValueChange = { pin = it }, placeholder = { Text("Create Master PIN", color = Color.White.copy(alpha = 0.7f)) }, visualTransformation = PasswordVisualTransformation(), leadingIcon = { Icon(Icons.Default.Lock, contentDescription = "Lock", tint = Color.White) }, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White, cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White), modifier = Modifier.fillMaxWidth())
+        ZeroTrustTextField(value = pin, onValueChange = { pin = it }, label = "Create Master PIN", engine = engine, isPassword = true, isWhiteText = true, leadingIcon = { Icon(Icons.Default.Lock, null, tint=Color.White) })
         Spacer(modifier = Modifier.height(24.dp))
-        TextField(value = confirmPin, onValueChange = { confirmPin = it }, placeholder = { Text("Confirm Master PIN", color = Color.White.copy(alpha = 0.7f)) }, visualTransformation = PasswordVisualTransformation(), leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = "Confirm", tint = Color.White) }, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.White, unfocusedIndicatorColor = Color.White, cursorColor = Color.White, focusedTextColor = Color.White, unfocusedTextColor = Color.White), modifier = Modifier.fillMaxWidth())
+        ZeroTrustTextField(value = confirmPin, onValueChange = { confirmPin = it }, label = "Confirm Master PIN", engine = engine, isPassword = true, isWhiteText = true, leadingIcon = { Icon(Icons.Default.CheckCircle, null, tint=Color.White) })
         Spacer(modifier = Modifier.height(40.dp))
 
         Button(
@@ -432,17 +471,12 @@ fun ZeroTrustRegisterScreen(navController: NavController, onRegisterSuccess: (St
                             val request = com.example.zerotrustwallet.network.RegisterRequest(username = username.trim(), email = email.trim(), pin = pin, zk_public_key = "temp_zk_key")
                             val response = com.example.zerotrustwallet.network.ApiClient.retrofitService.registerUser(request)
 
-                            if (response.message.isNotEmpty() && response.user != null) {
+                            if (response.user != null) {
                                 onRegisterSuccess(username, pin)
                                 Toast.makeText(context, "Success! Commencing Scan...", Toast.LENGTH_LONG).show()
-
-                                // THIS ROUTES TO THE ENROLLMENT SCREEN
-                                navController.navigate("enroll_keystroke/${response.user.id}") {
-                                    popUpTo("register") { inclusive = true }
-                                }
+                                navController.navigate("enroll_keystroke/${response.user.id}") { popUpTo("register") { inclusive = true } }
                             }
-                        } catch (e: retrofit2.HttpException) { Toast.makeText(context, "Server Error: ${e.code()}", Toast.LENGTH_LONG).show() }
-                        catch (e: Exception) { Toast.makeText(context, "App Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                        } catch (e: Exception) { Toast.makeText(context, "App Error: ${e.message}", Toast.LENGTH_LONG).show() }
                     }
                 }
             },
@@ -515,9 +549,24 @@ fun SendMoneyDetailScreen(navController: NavController, targetMobile: String, en
             Spacer(modifier = Modifier.height(24.dp))
             Text("Sending to: +94 $targetMobile", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
             Spacer(modifier = Modifier.height(32.dp))
-            ZeroTrustTextField(value = amount, onValueChange = { amount = it }, label = "Enter amount", engine = engine, leadingIcon = { Text("LKR ", fontWeight = FontWeight.Bold, color = BrandBlue) })
+
+            ZeroTrustTextField(
+                value = amount,
+                onValueChange = { amount = it },
+                label = "Enter amount",
+                engine = engine,
+                leadingIcon = { Text("LKR ", fontWeight = FontWeight.Bold, color = BrandBlue) }
+            )
+
             Spacer(modifier = Modifier.height(24.dp))
-            ZeroTrustTextField(value = reference, onValueChange = { reference = it }, label = "Reference (Required)", engine = engine)
+
+            ZeroTrustTextField(
+                value = reference,
+                onValueChange = { reference = it },
+                label = "Reference (Required)",
+                engine = engine
+            )
+
             Spacer(modifier = Modifier.height(40.dp))
             Button(
                 onClick = { navController.navigate("zk_biometric_transfer") },
@@ -1236,9 +1285,25 @@ fun EnrollmentKeystrokeScreen(
     keystrokeExtractor: KeystrokeFeatureExtractor
 ) {
     var typingTest by remember { mutableStateOf("") }
-    val expectedText = "Zero-Trust"
+    var currentAttempt by remember { mutableIntStateOf(1) }
 
+    // Create a blinking cursor effect
+    var cursorVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            cursorVisible = !cursorVisible
+        }
+    }
 
+// Your new comprehensive 3-stage baseline training
+    val samples = listOf(
+        "the quick brown fox jumps over the lazy dog",
+        "1850 2006 2426 9900", // Tests raw numeric cadence (like a card number)
+        "send $50.00 to user@email.com? yes!" // Tests mode switching and symbol cadence
+    )
+    val maxAttempts = samples.size
+    val expectedText = samples[currentAttempt - 1]
 
     Column(
         modifier = Modifier.fillMaxSize().background(BrandBackground).padding(24.dp).verticalScroll(rememberScrollState()),
@@ -1246,38 +1311,74 @@ fun EnrollmentKeystrokeScreen(
     ) {
         Spacer(modifier = Modifier.height(20.dp))
         Text("Step 1 of 3", fontSize = 14.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
-        Text("Keystroke Signature", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
-        Spacer(modifier = Modifier.height(40.dp))
+        Text("Keystroke Baseline", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
+        Spacer(modifier = Modifier.height(20.dp))
 
-        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
+        Card(
+            modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Error Correction Test", fontWeight = FontWeight.Bold, color = BrandBlue)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("1. Type 'Zeroo'\n2. Use backspace to delete the extra 'o'\n3. Finish typing '-Trust'", fontSize = 14.sp, color = Color.DarkGray)
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Final expected text: $expectedText", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = BrandLightBlue, fontWeight = FontWeight.SemiBold)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Model Training Phase", fontWeight = FontWeight.Bold, color = BrandBlue)
+                    Box(modifier = Modifier.background(BrandYellow, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        Text("Sample $currentAttempt / $maxAttempts", fontSize = 12.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
+                    }
+                }
 
-                Spacer(modifier = Modifier.height(24.dp))
-                ZeroTrustTextField(
-                    value = typingTest,
-                    onValueChange = { typingTest = it },
-                    label = "Type here...",
-                    engine = keystrokeExtractor
-                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Please type the following phrase exactly as shown to calibrate your rhythm:", fontSize = 14.sp, color = Color.DarkGray)
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(expectedText, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = BrandBlue)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(90.dp).background(Color(0xFFF5F9FF), RoundedCornerShape(8.dp)).border(1.dp, BrandBlue, RoundedCornerShape(8.dp)).padding(12.dp),
+                    contentAlignment = Alignment.TopStart
+                ) {
+                    // Inject the blinking cursor at the end of the text
+                    val displayText = if (typingTest.isEmpty()) "Start typing here...${if(cursorVisible) "|" else ""}" else "$typingTest${if(cursorVisible) "|" else ""}"
+                    Text(
+                        text = displayText, fontSize = 16.sp, color = if (typingTest.isEmpty()) Color.Gray else BrandBlue
+                    )
+                }
             }
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        ZeroTrustKeyboard(
+            engine = keystrokeExtractor,
+            onKeyPressed = { key ->
+                when (key) {
+                    "DEL" -> if (typingTest.isNotEmpty()) typingTest = typingTest.dropLast(1)
+                    "SPACE" -> typingTest += " "
+                    else -> typingTest += key
+                }
+            }
+        )
 
         Spacer(modifier = Modifier.weight(1f))
 
         val isKeystrokeDone = typingTest == expectedText
         Button(
-            onClick = { if (isKeystrokeDone) navController.navigate("enroll_gesture/$userId") },
+            onClick = {
+                if (isKeystrokeDone) {
+                    if (currentAttempt < maxAttempts) {
+                        typingTest = ""
+                        currentAttempt++
+                    } else {
+                        navController.navigate("enroll_gesture/$userId")
+                    }
+                }
+            },
             colors = ButtonDefaults.buttonColors(containerColor = if (isKeystrokeDone) BrandBlue else Color.LightGray),
             modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(8.dp)
-        ) { Text("NEXT STEP", color = Color.White, fontWeight = FontWeight.Bold) }
+        ) {
+            Text(if (currentAttempt < maxAttempts) "NEXT SAMPLE" else "NEXT STEP", color = Color.White, fontWeight = FontWeight.Bold)
+        }
     }
 }
-
 // --- SCREEN 2: GESTURE VECTORS ---
 @Composable
 fun EnrollmentGestureScreen(
@@ -1317,9 +1418,11 @@ fun EnrollmentGestureScreen(
         Box(
             modifier = Modifier.fillMaxWidth().height(250.dp).background(Color(0xFFE3F2FD), RoundedCornerShape(16.dp))
                 .pointerInput(Unit) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        gestureExtractor.recordGesture(dragAmount, change.uptimeMillis - change.previousUptimeMillis)
+                    detectDragGestures { change, dragAmount -> change.consume()
+                        // Correct mathematical subtraction:
+                        val duration = change.uptimeMillis - change.previousUptimeMillis
+                        gestureExtractor.recordGesture(dragAmount, duration)
+
                         if (dragAmount.x > 20) swipedL2R = true
                         if (dragAmount.x < -20) swipedR2L = true
                         if (dragAmount.y > 20) swipedT2B = true

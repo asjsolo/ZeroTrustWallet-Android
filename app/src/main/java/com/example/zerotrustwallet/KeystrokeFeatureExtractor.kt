@@ -1,49 +1,80 @@
 package com.example.zerotrustwallet
 
+import android.util.Log
+
 class KeystrokeFeatureExtractor {
-    private var lastInputTime: Long = 0L
-    private var previousTextLength: Int = 0
+    private val flightTimes = mutableListOf<Long>()
+    private val dwellTimes = mutableListOf<Long>()
+    private val errorSignature = mutableListOf<Int>()
 
-    // Arrays to hold the temporal features for the LSTM
-    private val flightTimes = mutableListOf<Double>()
-    private val errorCorrectionSignature = mutableListOf<Int>() // 1 for backspace, 0 for normal typing
+    private var lastKeyUpTime: Long = 0
+    private val keyPressMap = mutableMapOf<String, Long>()
 
-    fun recordTextChange(currentText: String) {
+    // For the 15-key batch continuous evaluation
+    var onBatchReady: ((Map<String, Any>) -> Unit)? = null
+    private var currentBatchCount = 0
+
+    fun recordKeyDown(key: String) {
         val currentTime = System.currentTimeMillis()
-        val currentLength = currentText.length
+        keyPressMap[key] = currentTime
 
-        // Track the dynamic error correction signature
-        if (currentLength < previousTextLength) {
-            // A backspace/deletion occurred
-            errorCorrectionSignature.add(1)
-        } else if (currentLength > previousTextLength) {
-            // Normal character added
-            errorCorrectionSignature.add(0)
+        // Calculate FLIGHT TIME (Time from releasing previous key to pressing this one)
+        if (lastKeyUpTime > 0) {
+            val flightTime = currentTime - lastKeyUpTime
+            flightTimes.add(flightTime)
 
-            // Calculate temporal flight time between key additions
-            if (lastInputTime != 0L) {
-                val flightTime = (currentTime - lastInputTime).toDouble()
-                flightTimes.add(flightTime)
-            }
+            // --- LIVE TELEMETRY LOG ---
+            Log.d("KeystrokeEngine", "[$key] Flight Time: ${flightTime}ms")
         }
 
-        previousTextLength = currentLength
-        lastInputTime = currentTime
+        // Calculate ERROR SIGNATURE
+        if (key == "DEL") {
+            errorSignature.add(1)
+            Log.d("KeystrokeEngine", "⚠️ Error Correction Detected (DEL)")
+        } else {
+            errorSignature.add(0)
+        }
     }
 
-    // Packages the extracted features to be fed into the LSTM
+    fun recordKeyUp(key: String) {
+        val currentTime = System.currentTimeMillis()
+        lastKeyUpTime = currentTime
+
+        // Calculate DWELL TIME (Time the finger spent holding down this specific key)
+        val keyDownTime = keyPressMap.remove(key)
+        if (keyDownTime != null) {
+            val dwellTime = currentTime - keyDownTime
+            dwellTimes.add(dwellTime)
+
+            // --- LIVE TELEMETRY LOG ---
+            Log.d("KeystrokeEngine", "[$key] Dwell Time: ${dwellTime}ms")
+        }
+
+        // Trigger continuous evaluation batch
+        currentBatchCount++
+        if (currentBatchCount >= 15) {
+            val batchData = exportLSTMFeatures()
+            onBatchReady?.invoke(batchData)
+            currentBatchCount = 0 // Reset for the next rolling batch
+        }
+    }
+
     fun exportLSTMFeatures(): Map<String, Any> {
         return mapOf(
-            "temporalSequence" to flightTimes.toList(),
-            "errorSignature" to errorCorrectionSignature.toList(),
+            "flightTimes" to flightTimes.toList(),
+            "dwellTimes" to dwellTimes.toList(),
+            "errorSignature" to errorSignature.toList(),
             "sequenceLength" to flightTimes.size
         )
     }
 
     fun wipeSession() {
         flightTimes.clear()
-        errorCorrectionSignature.clear()
-        lastInputTime = 0L
-        previousTextLength = 0
+        dwellTimes.clear()
+        errorSignature.clear()
+        lastKeyUpTime = 0
+        keyPressMap.clear()
+        currentBatchCount = 0
+        Log.d("KeystrokeEngine", "Secure Session Wiped.")
     }
 }

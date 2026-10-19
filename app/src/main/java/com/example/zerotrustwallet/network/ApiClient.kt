@@ -53,11 +53,15 @@ interface ZeroTrustApi {
 
     @POST("api/auth/enroll")
     suspend fun enrollBiometrics(@Body request: EnrollmentRequest): AuthResponse
+
+    @POST("api/auth/verify-keystroke") // Ensure this matches your Node route prefix
+    suspend fun verifyKeystrokes(@Body request: VerifyKeystrokeRequest): VerifyKeystrokeResponse
 }
 // --- 3. RETROFIT CLIENT BUILDER ---
 object ApiClient {
     // Your new global internet address!
-    private const val BASE_URL = " https://wrench-silicon-slider.ngrok-free.dev /"
+    private const val BASE_URL = " https://wrench-silicon-slider.ngrok-free.dev "
+
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -74,3 +78,14 @@ object ApiClient {
             .create(ZeroTrustApi::class.java)
     }
 }
+
+data class VerifyKeystrokeRequest(
+    val userId: String,
+    val batchData: Map<String, @JvmSuppressWildcards Any>
+)
+
+data class VerifyKeystrokeResponse(
+    val verified: Boolean,
+    val score: Float,
+    val timestamp: String
+)
