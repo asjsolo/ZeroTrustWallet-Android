@@ -1,5 +1,6 @@
 package com.example.zerotrustwallet
 
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -16,7 +17,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+
+/**
+ * Custom In-App Zero-Trust Keyboard (Component 1 - Sakith)
+ * Intercepts raw pointer down/up events at the Compose UI layer to prevent OS keyboard spoofing.
+ */
 enum class KeyboardMode { ALPHABET, SYMBOLS }
+
 
 @Composable
 fun SecureKeyButton(
@@ -27,13 +34,12 @@ fun SecureKeyButton(
 ) {
     Box(
         modifier = modifier
-            .padding(horizontal = 1.dp, vertical = 2.dp) // Much tighter padding = wider keys
+            .padding(horizontal = 1.dp, vertical = 2.dp)
             .height(50.dp)
             .background(
                 if (keyChar in listOf("DEL", "SPACE", "SHIFT", "?123", "ABC")) Color(0xFF1F618D) else Color(0xFF2E86C1),
                 RoundedCornerShape(6.dp)
             )
-            // Passing keyChar to pointerInput forces it to reset perfectly when symbols change
             .pointerInput(keyChar) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -41,6 +47,7 @@ fun SecureKeyButton(
                     if (keyChar !in listOf("?123", "ABC", "SHIFT")) {
                         engine.recordKeyDown(keyChar)
                     }
+
 
                     val up = waitForUpOrCancellation()
                     if (up != null) {
@@ -57,6 +64,8 @@ fun SecureKeyButton(
         Text(text = keyChar, color = Color.White, fontSize = if (keyChar.length > 1) 12.sp else 18.sp, fontWeight = FontWeight.Bold)
     }
 }
+
+
 @Composable
 fun ZeroTrustKeyboard(
     engine: KeystrokeFeatureExtractor,
@@ -65,22 +74,24 @@ fun ZeroTrustKeyboard(
     var isShifted by remember { mutableStateOf(false) }
     var keyboardMode by remember { mutableStateOf(KeyboardMode.ALPHABET) }
 
-    // --- ALPHABET LAYOUT ---
+
     val alphaRow1 = listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p")
     val alphaRow2 = listOf("a", "s", "d", "f", "g", "h", "j", "k", "l")
     val alphaRow3 = listOf("SHIFT", "z", "x", "c", "v", "b", "n", "m", "DEL")
     val alphaRow4 = listOf("?123", ",", "SPACE", ".", "-")
 
-    // --- NUMBERS & SYMBOLS LAYOUT ---
+
     val symRow1 = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
     val symRow2 = listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/")
     val symRow3 = listOf("=", "*", "\"", "'", ":", ";", "!", "?", "DEL")
     val symRow4 = listOf("ABC", ",", "SPACE", ".", "_")
 
+
     val currentRows = if (keyboardMode == KeyboardMode.ALPHABET)
         listOf(alphaRow1, alphaRow2, alphaRow3, alphaRow4)
     else
         listOf(symRow1, symRow2, symRow3, symRow4)
+
 
     Column(
         modifier = Modifier.fillMaxWidth().background(Color(0xFFF5F9FF)).padding(4.dp),
@@ -88,18 +99,18 @@ fun ZeroTrustKeyboard(
     ) {
         currentRows.forEachIndexed { rowIndex, row ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-
-                // FIX 1: Only indent the ASDF row, so the @ symbol doesn't get pushed off its hit box!
                 val isAsdfRow = keyboardMode == KeyboardMode.ALPHABET && rowIndex == 1
                 if (isAsdfRow) Spacer(modifier = Modifier.weight(0.5f))
+
 
                 row.forEach { keyChar ->
                     val displayChar = if (keyChar.length == 1 && isShifted && keyChar[0].isLetter()) keyChar.uppercase() else keyChar
                     val weight = when (keyChar) {
-                        "SPACE" -> 5f // FIX 2: Make Spacebar much bigger so fast tapping doesn't hit the period!
+                        "SPACE" -> 5f
                         "SHIFT", "DEL", "?123", "ABC" -> 1.5f
                         else -> 1f
                     }
+
 
                     SecureKeyButton(
                         keyChar = displayChar, engine = engine, modifier = Modifier.weight(weight),
@@ -116,6 +127,7 @@ fun ZeroTrustKeyboard(
                         }
                     )
                 }
+
 
                 if (isAsdfRow) Spacer(modifier = Modifier.weight(0.5f))
             }
