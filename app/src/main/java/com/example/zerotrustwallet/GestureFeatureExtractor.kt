@@ -1,60 +1,79 @@
 package com.example.zerotrustwallet
 
-import androidx.compose.ui.geometry.Offset
+import android.util.Log
+import kotlin.math.pow
 import kotlin.math.sqrt
 
+/**
+ * Spatial Gesture Biometric Extractor (Component 2 - Kalani)
+ * Captures swipe velocity, drag duration, and trajectory distance.
+ * Batches telemetry every 5 swipes for continuous authentication.
+ */
 class GestureFeatureExtractor {
+    private val swipeVelocities = mutableListOf<Float>()
+    private val dragDurations = mutableListOf<Long>()
+    private val trajectories = mutableListOf<Float>()
 
-    // Data structures holding spatial feature vectors for the CNN model
-    private val spatialVectors = mutableListOf<GestureVector>()
+    private var startX: Float = 0f
+    private var startY: Float = 0f
+    private var startTime: Long = 0
 
-    data class GestureVector(
-        val velocityX: Float,
-        val velocityY: Float,
-        val totalDistance: Float,
-        val durationMs: Long
-    )
+    // Callback triggered every 5 gestures for continuous verification
+    var onGestureBatchReady: ((Map<String, Any>) -> Unit)? = null
+    private var swipeCount = 0
+    private val BATCH_SIZE = 5
 
-    // Records a completed drag or swipe event from Jetpack Compose pointer events
-    fun recordGesture(
-        dragAmount: Offset,
-        durationMs: Long
-    ) {
-        if (durationMs <= 0) return
-
-        val distanceX = dragAmount.x
-        val distanceY = dragAmount.y
-
-        // Calculate total spatial distance: sqrt(dx^2 + dy^2)
-        val totalDistance = sqrt((distanceX * distanceX) + (distanceY * distanceY))
-
-        // Calculate velocity (pixels per millisecond)
-        val velocityX = distanceX / durationMs
-        val velocityY = distanceY / durationMs
-
-        val vector = GestureVector(
-            velocityX = velocityX,
-            velocityY = velocityY,
-            totalDistance = totalDistance,
-            durationMs = durationMs
-        )
-
-        spatialVectors.add(vector)
+    fun recordTouchDown(x: Float, y: Float) {
+        startX = x
+        startY = y
+        startTime = System.currentTimeMillis()
     }
 
-    // Exports spatial feature matrices to feed the CNN model
-    fun exportCNNFeatures(): List<Map<String, Any>> {
-        return spatialVectors.map { vector ->
-            mapOf(
-                "vx" to vector.velocityX,
-                "vy" to vector.velocityY,
-                "distance" to vector.totalDistance,
-                "duration" to vector.durationMs
-            )
+    fun recordTouchUp(endX: Float, endY: Float) {
+        val endTime = System.currentTimeMillis()
+        val duration = endTime - startTime
+
+        val distanceX = endX - startX
+        val distanceY = endY - startY
+        val distance = sqrt(distanceX.pow(2) + distanceY.pow(2))
+
+        // REMOVED distance > 30f limit: Now captures BOTH Swipes and Taps
+        if (duration > 20) {
+            val velocity = if (duration > 0) distance / duration else 0f
+
+            dragDurations.add(duration)
+            trajectories.add(distance)
+            swipeVelocities.add(velocity)
+
+            if (distance < 10f) {
+                Log.d("GestureEngine", "Tap Detected -> Duration: ${duration}ms")
+            } else {
+                Log.d("GestureEngine", "Swipe Detected -> Velocity: ${velocity}px/ms, Distance: ${distance}px")
+            }
+
+            swipeCount++
+            if (swipeCount >= BATCH_SIZE) {
+                val batchData = exportGestureFeatures()
+                onGestureBatchReady?.invoke(batchData)
+                swipeCount = 0
+            }
         }
     }
 
+    fun exportGestureFeatures(): Map<String, Any> {
+        return mapOf(
+            "velocities" to swipeVelocities.toList(),
+            "durations" to dragDurations.toList(),
+            "trajectories" to trajectories.toList(),
+            "sequenceLength" to swipeVelocities.size
+        )
+    }
+
     fun wipeSession() {
-        spatialVectors.clear()
+        swipeVelocities.clear()
+        dragDurations.clear()
+        trajectories.clear()
+        swipeCount = 0
+        Log.d("GestureEngine", "Secure Gesture Session Wiped.")
     }
 }

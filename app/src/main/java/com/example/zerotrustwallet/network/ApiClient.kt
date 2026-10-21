@@ -1,10 +1,11 @@
 package com.example.zerotrustwallet.network
 
+import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
-import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 // --- 1. DATA CLASSES (Matching your Node.js backend) ---
@@ -38,44 +39,47 @@ data class UserData(
 data class EnrollmentRequest(
     val userId: String,
     val keystrokeBaseline: Map<String, Any>,
-    val gestureBaseline: List<Map<String, Any>>,
+    val gestureBaseline: Map<String, Any>,
     val imuBaseline: Map<String, Any>
 )
 
 // --- 2. API INTERFACE ---
-interface ZeroTrustApi {
+interface ApiService {
     @POST("api/auth/register")
     suspend fun registerUser(@Body request: RegisterRequest): AuthResponse
 
-    // ADD THIS NEW LINE:
     @POST("api/auth/login")
     suspend fun loginUser(@Body request: LoginRequest): AuthResponse
 
     @POST("api/auth/enroll")
     suspend fun enrollBiometrics(@Body request: EnrollmentRequest): AuthResponse
 
-    @POST("api/auth/verify-keystroke") // Ensure this matches your Node route prefix
+    @POST("api/auth/verify-keystroke")
     suspend fun verifyKeystrokes(@Body request: VerifyKeystrokeRequest): VerifyKeystrokeResponse
+
+    @POST("api/auth/verify-gesture")
+    suspend fun verifyGestureBatch(@Body payload: Map<String, Any>): Response<Map<String, Any>>
 }
 // --- 3. RETROFIT CLIENT BUILDER ---
 object ApiClient {
-    // Your new global internet address!
-    private const val BASE_URL = " https://wrench-silicon-slider.ngrok-free.dev "
+    // Use your laptop's IPv4 address here (e.g., http://192.168.1.100:5000/)
+    private const val BASE_URL = " https://wrench-silicon-slider.ngrok-free.dev"
 
-
+    // Increase timeouts to 60 seconds for massive biometric payloads
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    val retrofitService: ZeroTrustApi by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(ZeroTrustApi::class.java)
+    private val retrofit = Retrofit.Builder()
+        .baseUrl(BASE_URL)
+        .client(okHttpClient)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+
+    val retrofitService: ApiService by lazy {
+        retrofit.create(ApiService::class.java)
     }
 }
 

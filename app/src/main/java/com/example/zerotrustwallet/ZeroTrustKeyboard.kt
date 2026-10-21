@@ -27,36 +27,32 @@ fun SecureKeyButton(
     modifier: Modifier = Modifier,
     onClick: (String) -> Unit
 ) {
+    val isCommandKey = keyChar in listOf("DEL", "SPACE", "SHIFT", "?123", "ABC")
+    val bgColor = if (isCommandKey) Color(0xFFFFD600) else Color(0xFF2E86C1) // BrandYellow or BrandLightBlue
+    val textColor = if (isCommandKey) Color(0xFF005DAA) else Color.White // BrandBlue or White
+
     Box(
         modifier = modifier
             .padding(horizontal = 1.dp, vertical = 2.dp)
             .height(50.dp)
-            .background(
-                if (keyChar in listOf("DEL", "SPACE", "SHIFT", "?123", "ABC")) Color(0xFF1F618D) else Color(0xFF2E86C1),
-                RoundedCornerShape(6.dp)
-            )
+            .background(bgColor, RoundedCornerShape(6.dp))
             .pointerInput(keyChar) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
-                    if (keyChar !in listOf("?123", "ABC", "SHIFT")) {
-                        engine.recordKeyDown(keyChar)
-                    }
-
+                    if (!isCommandKey) engine.recordKeyDown(keyChar)
 
                     val up = waitForUpOrCancellation()
                     if (up != null) {
                         up.consume()
-                        if (keyChar !in listOf("?123", "ABC", "SHIFT")) {
-                            engine.recordKeyUp(keyChar)
-                        }
+                        if (!isCommandKey) engine.recordKeyUp(keyChar)
                         onClick(keyChar)
                     }
                 }
             },
         contentAlignment = Alignment.Center
     ) {
-        Text(text = keyChar, color = Color.White, fontSize = if (keyChar.length > 1) 12.sp else 18.sp, fontWeight = FontWeight.Bold)
+        Text(text = keyChar, color = textColor, fontSize = if (keyChar.length > 1) 12.sp else 18.sp, fontWeight = FontWeight.Bold)
     }
 }
 

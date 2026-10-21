@@ -48,12 +48,19 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 
 // Brand Colors
 val BrandBlue = Color(0xFF005DAA)
 val BrandYellow = Color(0xFFFFD600)
 val BrandLightBlue = Color(0xFF2E86C1)
 val BrandBackground = Color(0xFFF5F5F5)
+
 
 // --- GLOBAL ZERO-TRUST KEYBOARD CONTROLLER ---
 class GlobalKeyboardState {
@@ -129,15 +136,29 @@ class MainActivity : ComponentActivity() {
 
                 CompositionLocalProvider(LocalZeroTrustKeyboard provides keyboardState) {
 
-                    // --- 2. CAPTURE GLOBAL GESTURES ---
-                    Box(modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectDragGestures { change, dragAmount -> change.consume()
-                                val duration = change.uptimeMillis - change.previousUptimeMillis
-                                gestureExtractor.recordGesture(dragAmount, duration)
+// --- 2. CAPTURE GLOBAL GESTURES ---
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        // "Initial" pass allows us to spy on the touch before the UI consumes it
+                                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                        val touch = event.changes.firstOrNull()
+
+                                        if (touch != null) {
+                                            if (touch.pressed && !touch.previousPressed) {
+                                                // Finger touched the screen
+                                                gestureExtractor.recordTouchDown(touch.position.x, touch.position.y)
+                                            } else if (!touch.pressed && touch.previousPressed) {
+                                                // Finger lifted off the screen
+                                                gestureExtractor.recordTouchUp(touch.position.x, touch.position.y)
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        }
                     ) {
                         // --- NAV HOST CONTENT ---
                         NavHost(
@@ -149,12 +170,12 @@ class MainActivity : ComponentActivity() {
                         ) {
 // ... (rest of your NavHost and Keyboard Overlay stays exactly the same)
                             composable("login") { ZeroTrustLoginScreen(navController, keystrokeExtractor){ userId ->
-                                    zkFusionEngine.activeUserId = userId
-                                }
+                                zkFusionEngine.activeUserId = userId
+                            }
                             }
                             composable("register") { ZeroTrustRegisterScreen(navController, keystrokeExtractor){ newPhone, newPin ->
-                                    registeredPhone = newPhone; registeredPin = newPin
-                                }
+                                registeredPhone = newPhone; registeredPin = newPin
+                            }
                             }
                             composable("enroll_keystroke/{userId}") { backStackEntry ->
                                 val userId = backStackEntry.arguments?.getString("userId") ?: ""
@@ -1276,7 +1297,7 @@ fun TransactionHistoryScreen(navController: NavController) {
     }
 }
 
-// --- SCREEN 1: KEYSTROKE DYNAMICS ---
+//--- SCREEN 1: KEYSTROKE DYNAMICS ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EnrollmentKeystrokeScreen(
@@ -1286,8 +1307,8 @@ fun EnrollmentKeystrokeScreen(
 ) {
     var typingTest by remember { mutableStateOf("") }
     var currentAttempt by remember { mutableIntStateOf(1) }
+    val keyboardState = LocalZeroTrustKeyboard.current
 
-    // Create a blinking cursor effect
     var cursorVisible by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -1296,11 +1317,10 @@ fun EnrollmentKeystrokeScreen(
         }
     }
 
-// Your new comprehensive 3-stage baseline training
     val samples = listOf(
         "the quick brown fox jumps over the lazy dog",
-        "1850 2006 2426 9900", // Tests raw numeric cadence (like a card number)
-        "send $50.00 to user@email.com? yes!" // Tests mode switching and symbol cadence
+        "1850 2006 2426 9900",
+        "send $50.00 to user@email.com? yes!"
     )
     val maxAttempts = samples.size
     val expectedText = samples[currentAttempt - 1]
@@ -1332,31 +1352,17 @@ fun EnrollmentKeystrokeScreen(
                 Text(expectedText, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = BrandBlue)
                 Spacer(modifier = Modifier.height(16.dp))
 
+                // Clicking this box triggers the Global Pop-up Keyboard
                 Box(
-                    modifier = Modifier.fillMaxWidth().height(90.dp).background(Color(0xFFF5F9FF), RoundedCornerShape(8.dp)).border(1.dp, BrandBlue, RoundedCornerShape(8.dp)).padding(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(90.dp).background(Color(0xFFF5F9FF), RoundedCornerShape(8.dp)).border(1.dp, BrandBlue, RoundedCornerShape(8.dp)).padding(12.dp)
+                        .clickable { keyboardState.openKeyboard(typingTest) { typingTest = it } },
                     contentAlignment = Alignment.TopStart
                 ) {
-                    // Inject the blinking cursor at the end of the text
                     val displayText = if (typingTest.isEmpty()) "Start typing here...${if(cursorVisible) "|" else ""}" else "$typingTest${if(cursorVisible) "|" else ""}"
-                    Text(
-                        text = displayText, fontSize = 16.sp, color = if (typingTest.isEmpty()) Color.Gray else BrandBlue
-                    )
+                    Text(text = displayText, fontSize = 16.sp, color = if (typingTest.isEmpty()) Color.Gray else BrandBlue)
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        ZeroTrustKeyboard(
-            engine = keystrokeExtractor,
-            onKeyPressed = { key ->
-                when (key) {
-                    "DEL" -> if (typingTest.isNotEmpty()) typingTest = typingTest.dropLast(1)
-                    "SPACE" -> typingTest += " "
-                    else -> typingTest += key
-                }
-            }
-        )
 
         Spacer(modifier = Modifier.weight(1f))
 
@@ -1367,7 +1373,9 @@ fun EnrollmentKeystrokeScreen(
                     if (currentAttempt < maxAttempts) {
                         typingTest = ""
                         currentAttempt++
+                        keyboardState.activeInputText = ""
                     } else {
+                        keyboardState.closeKeyboard()
                         navController.navigate("enroll_gesture/$userId")
                     }
                 }
@@ -1379,69 +1387,122 @@ fun EnrollmentKeystrokeScreen(
         }
     }
 }
-// --- SCREEN 2: GESTURE VECTORS ---
+// --- SCREEN 2: GESTURE VECTORS (COMBINED 2-PHASE AUTHENTIC TELEMETRY) ---
 @Composable
 fun EnrollmentGestureScreen(
     navController: NavController,
     userId: String,
     gestureExtractor: GestureFeatureExtractor
 ) {
+    var phase by remember { mutableIntStateOf(1) }
+
+    // Phase 1 Variables
     var swipedL2R by remember { mutableStateOf(false) }
     var swipedR2L by remember { mutableStateOf(false) }
     var swipedT2B by remember { mutableStateOf(false) }
     var swipedB2T by remember { mutableStateOf(false) }
 
+    // Phase 2 Variables
+    var currentAttempt by remember { mutableIntStateOf(1) }
+    val maxAttempts = 5
+    val menuItems = listOf(
+        "Send Money" to Icons.Default.Send, "Transfer" to Icons.Default.AccountBalance,
+        "Request" to Icons.Default.CallReceived, "My QR" to Icons.Default.QrCode,
+        "Bill Payment" to Icons.Default.Receipt, "Mobile Reload" to Icons.Default.PhoneAndroid,
+        "Direct Pay" to Icons.Default.Payment, "Deals & Coupons" to Icons.Default.LocalOffer,
+        "Loyalty & Rewards" to Icons.Default.CardMembership, "Cash to Mobile" to Icons.Default.MobileFriendly,
+        "Transaction History" to Icons.Default.History, "Notifications" to Icons.Outlined.Notifications,
+        "App Settings" to Icons.Default.Settings
+    )
+    val targets = remember { listOf("App Settings", "Transaction History", "Loyalty & Rewards", "Deals & Coupons", "Bill Payment").shuffled() }
+    val currentTarget = if (currentAttempt <= maxAttempts) targets[currentAttempt - 1] else ""
 
+    Column(modifier = Modifier.fillMaxSize().background(BrandBackground)) {
+        Column(modifier = Modifier.padding(24.dp)) {
+            Spacer(modifier = Modifier.height(20.dp))
+            Text("Step 2 of 3", fontSize = 14.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
+            Text("Spatial Touch Vectors", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
+            Spacer(modifier = Modifier.height(16.dp))
 
-    Column(
-        modifier = Modifier.fillMaxSize().background(BrandBackground).padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Spacer(modifier = Modifier.height(20.dp))
-        Text("Step 2 of 3", fontSize = 14.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
-        Text("Spatial Touch Vectors", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
-        Spacer(modifier = Modifier.height(40.dp))
-
-        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Swipe Checklist:", fontWeight = FontWeight.Bold, color = BrandBlue)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row { Checkbox(checked = swipedL2R, onCheckedChange = {}); Text("Swipe Left to Right", modifier = Modifier.align(Alignment.CenterVertically)) }
-                Row { Checkbox(checked = swipedR2L, onCheckedChange = {}); Text("Swipe Right to Left", modifier = Modifier.align(Alignment.CenterVertically)) }
-                Row { Checkbox(checked = swipedT2B, onCheckedChange = {}); Text("Swipe Top to Bottom", modifier = Modifier.align(Alignment.CenterVertically)) }
-                Row { Checkbox(checked = swipedB2T, onCheckedChange = {}); Text("Swipe Bottom to Top", modifier = Modifier.align(Alignment.CenterVertically)) }
+            if (phase == 1) {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Phase 1: Directional Sweeps", fontWeight = FontWeight.Bold, color = BrandBlue)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row { Checkbox(checked = swipedL2R, onCheckedChange = {}); Text("Swipe Left to Right", modifier = Modifier.align(Alignment.CenterVertically)) }
+                        Row { Checkbox(checked = swipedR2L, onCheckedChange = {}); Text("Swipe Right to Left", modifier = Modifier.align(Alignment.CenterVertically)) }
+                        Row { Checkbox(checked = swipedT2B, onCheckedChange = {}); Text("Swipe Top to Bottom", modifier = Modifier.align(Alignment.CenterVertically)) }
+                        Row { Checkbox(checked = swipedB2T, onCheckedChange = {}); Text("Swipe Bottom to Top", modifier = Modifier.align(Alignment.CenterVertically)) }
+                    }
+                }
+            } else {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Phase 2: Authentic Scrolling", fontWeight = FontWeight.Bold, color = BrandBlue)
+                            Box(modifier = Modifier.background(BrandYellow, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                Text("Trial $currentAttempt / $maxAttempts", fontSize = 12.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Scroll through the menu below and tap on:", fontSize = 14.sp, color = Color.DarkGray)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(currentTarget, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = BrandBlue)
+                    }
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        if (phase == 1) {
+            Box(
+                modifier = Modifier.fillMaxWidth().height(250.dp).padding(horizontal = 24.dp).background(Color(0xFFE3F2FD), RoundedCornerShape(16.dp))
+                    .pointerInput(Unit) {
 
-        Box(
-            modifier = Modifier.fillMaxWidth().height(250.dp).background(Color(0xFFE3F2FD), RoundedCornerShape(16.dp))
-                .pointerInput(Unit) {
-                    detectDragGestures { change, dragAmount -> change.consume()
-                        // Correct mathematical subtraction:
-                        val duration = change.uptimeMillis - change.previousUptimeMillis
-                        gestureExtractor.recordGesture(dragAmount, duration)
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val up = waitForUpOrCancellation()
+                            if (up != null) {
+                                val dragX = up.position.x - down.position.x
+                                val dragY = up.position.y - down.position.y
+                                if (dragX > 50) swipedL2R = true
+                                if (dragX < -50) swipedR2L = true
+                                if (dragY > 50) swipedT2B = true
+                                if (dragY < -50) swipedB2T = true
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) { Text("PERFORM SWIPES HERE", color = BrandBlue.copy(alpha = 0.5f), fontWeight = FontWeight.Bold) }
 
-                        if (dragAmount.x > 20) swipedL2R = true
-                        if (dragAmount.x < -20) swipedR2L = true
-                        if (dragAmount.y > 20) swipedT2B = true
-                        if (dragAmount.y < -20) swipedB2T = true
+            Spacer(modifier = Modifier.weight(1f))
+            val isSwipeDone = swipedL2R && swipedR2L && swipedT2B && swipedB2T
+            Button(
+                onClick = { if (isSwipeDone) phase = 2 },
+                colors = ButtonDefaults.buttonColors(containerColor = if (isSwipeDone) BrandBlue else Color.LightGray),
+                modifier = Modifier.fillMaxWidth().padding(24.dp).height(50.dp), shape = RoundedCornerShape(8.dp)
+            ) { Text("PROCEED TO PHASE 2", color = Color.White, fontWeight = FontWeight.Bold) }
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp)) {
+                items(menuItems) { (name, icon) ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                            .clickable {
+                                if (name == currentTarget) {
+                                    if (currentAttempt < maxAttempts) currentAttempt++
+                                    else navController.navigate("enroll_imu/$userId")
+                                }
+                            },
+                        colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(icon, contentDescription = name, tint = BrandBlue, modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text(name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = BrandBlue)
+                        }
                     }
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Text("PERFORM SWIPES HERE", color = BrandBlue.copy(alpha = 0.5f), fontWeight = FontWeight.Bold)
+                }
+            }
         }
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        val isSwipeDone = swipedL2R && swipedR2L && swipedT2B && swipedB2T
-        Button(
-            onClick = { if (isSwipeDone) navController.navigate("enroll_imu/$userId") },
-            colors = ButtonDefaults.buttonColors(containerColor = if (isSwipeDone) BrandBlue else Color.LightGray),
-            modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(8.dp)
-        ) { Text("NEXT STEP", color = Color.White, fontWeight = FontWeight.Bold) }
     }
 }
 
@@ -1497,8 +1558,8 @@ fun EnrollmentIMUScreen(
                         try {
                             val request = com.example.zerotrustwallet.network.EnrollmentRequest(
                                 userId = userId,
-                                keystrokeBaseline = keystrokeExtractor.exportLSTMFeatures(),
-                                gestureBaseline = gestureExtractor.exportCNNFeatures(),
+                                keystrokeBaseline = keystrokeExtractor.exportKeystrokeFeatures(),
+                                gestureBaseline = gestureExtractor.exportGestureFeatures(),
                                 imuBaseline = imuExtractor.exportMotionFeatures()
                             )
                             val response = com.example.zerotrustwallet.network.ApiClient.retrofitService.enrollBiometrics(request)
