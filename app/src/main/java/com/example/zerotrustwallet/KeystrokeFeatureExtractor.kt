@@ -57,14 +57,14 @@ class KeystrokeFeatureExtractor {
         // Trigger 15-key rolling window evaluation batch
         currentBatchCount++
         if (currentBatchCount >= 15) {
-            val batchData = exportLSTMFeatures()
+            val batchData = exportKeystrokeFeatures()
             onBatchReady?.invoke(batchData)
             currentBatchCount = 0 // Reset counter for next rolling window
         }
     }
 
 
-    fun exportLSTMFeatures(): Map<String, Any> {
+    fun exportKeystrokeFeatures(): Map<String, Any> {
         return mapOf(
             "flightTimes" to flightTimes.toList(),
             "dwellTimes" to dwellTimes.toList(),
