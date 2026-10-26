@@ -1,5 +1,7 @@
 ***
 
+### Frontend Repository (`README.md`)
+
 ```markdown
 # ZeroTrustWallet - Android Edge Gatekeeper (Frontend)
 
