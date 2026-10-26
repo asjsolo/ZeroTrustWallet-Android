@@ -67,7 +67,7 @@ interface ApiService {
 // --- 3. RETROFIT CLIENT BUILDER ---
 object ApiClient {
     // Use your laptop's IPv4 address here (e.g., http://192.168.1.100:5000/)
-    private const val BASE_URL = "https://wrench-silicon-slider.ngrok-free.dev/"
+    private const val BASE_URL = " https://wrench-silicon-slider.ngrok-free.dev"
 
     // Increase timeouts to 60 seconds for massive biometric payloads
     private val okHttpClient = OkHttpClient.Builder()

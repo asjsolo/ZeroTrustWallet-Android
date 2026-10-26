@@ -6,6 +6,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.util.Log
+import kotlin.math.sqrt
 
 class IMUFeatureExtractor(context: Context) : SensorEventListener {
 
@@ -16,43 +17,71 @@ class IMUFeatureExtractor(context: Context) : SensorEventListener {
     private val accelerationReadings = mutableListOf<FloatArray>()
     private val gyroscopeReadings = mutableListOf<FloatArray>()
 
-    // Continuous Verification Callback
+    private var latestAccel = floatArrayOf(0f, 0f, 0f)
+    private var latestGyro = floatArrayOf(0f, 0f, 0f)
+
     var onMotionBatchReady: ((Map<String, Any>) -> Unit)? = null
+
+    private var lastCaptureTime: Long = 0
+    private val CAPTURE_INTERVAL_MS = 250L
+
     private var batchCounter = 0
-    private val BATCH_THRESHOLD = 50 // Trigger evaluation every 50 sensor ticks
+    private val BATCH_THRESHOLD = 20
 
     fun startListening() {
-        accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-        gyroscope?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-        Log.d("IMUEngine", "Hardware Sensors Active. Monitoring physical tremors...")
+        accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        gyroscope?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
 
     fun stopListening() {
         sensorManager.unregisterListener(this)
-        Log.d("IMUEngine", "Hardware Sensors Offline.")
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {
-            when (it.sensor.type) {
-                Sensor.TYPE_ACCELEROMETER -> {
-                    accelerationReadings.add(floatArrayOf(it.values[0], it.values[1], it.values[2]))
-                }
-                Sensor.TYPE_GYROSCOPE -> {
-                    gyroscopeReadings.add(floatArrayOf(it.values[0], it.values[1], it.values[2]))
-                }
+            if (it.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                latestAccel = it.values.clone()
+            } else if (it.sensor.type == Sensor.TYPE_GYROSCOPE) {
+                latestGyro = it.values.clone()
+            }
+        }
+
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastCaptureTime > CAPTURE_INTERVAL_MS) {
+            lastCaptureTime = currentTime
+
+            // Calculate 3D Rotational Magnitude
+            val gyroMag = sqrt(
+                (latestGyro[0] * latestGyro[0] +
+                        latestGyro[1] * latestGyro[1] +
+                        latestGyro[2] * latestGyro[2]).toDouble()
+            ).toFloat()
+
+            // DEADZONE FILTER: If rotation is basically zero, phone is resting on a flat surface.
+            if (gyroMag < 0.02f) {
+                return // Exit early. Do not record data or increment batch.
             }
 
-            // Trigger continuous background evaluation
+            // Phone is moving/in-hand. Record the data.
+            accelerationReadings.add(latestAccel.clone())
+            gyroscopeReadings.add(latestGyro.clone())
+            Log.d("IMUEngine", "Motion Captured -> Gyro Mag: $gyroMag")
+
             batchCounter++
             if (batchCounter >= BATCH_THRESHOLD) {
-                onMotionBatchReady?.invoke(exportMotionFeatures())
+                val features = exportMotionFeatures()
+                Log.d("IMUEngine", "Batch Ready: ${features["totalDataPoints"]} data points")
+                onMotionBatchReady?.invoke(features)
                 batchCounter = 0
 
-                // Prevent memory leaks by dropping old telemetry
-                if (accelerationReadings.size > 200) {
-                    accelerationReadings.subList(0, 100).clear()
-                    gyroscopeReadings.subList(0, 100).clear()
+                if (accelerationReadings.size >= BATCH_THRESHOLD) {
+                    val halfSizeAccel = accelerationReadings.size / 2
+                    accelerationReadings.subList(0, halfSizeAccel).clear()
+
+                    val halfSizeGyro = gyroscopeReadings.size / 2
+                    if (halfSizeGyro > 0) {
+                        gyroscopeReadings.subList(0, halfSizeGyro).clear()
+                    }
                 }
             }
         }

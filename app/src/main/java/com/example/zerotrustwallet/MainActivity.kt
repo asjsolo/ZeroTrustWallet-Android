@@ -54,6 +54,7 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import android.util.Log
 
 // Brand Colors
 val BrandBlue = Color(0xFF005DAA)
@@ -123,8 +124,16 @@ class MainActivity : ComponentActivity() {
                 // 2. Global Keyboard State
                 val keyboardState = remember { GlobalKeyboardState() }
 
-                DisposableEffect(Unit) {
-                    imuExtractor.startListening()
+// Bind IMU Hardware strictly to Keyboard lifecycle
+                DisposableEffect(keyboardState.isVisible) {
+                    if (keyboardState.isVisible) {
+                        Log.d("ZeroTrust", "Keyboard Active -> IMU Hardware Listening")
+                        imuExtractor.startListening()
+                    } else {
+                        Log.d("ZeroTrust", "Keyboard Inactive -> IMU Hardware Sleeping")
+                        imuExtractor.stopListening()
+                        imuExtractor.wipeSession() // Clear old tremor data from previous inputs
+                    }
                     onDispose { imuExtractor.stopListening() }
                 }
 
@@ -1506,7 +1515,8 @@ fun EnrollmentGestureScreen(
     }
 }
 
-// --- SCREEN 3: IMU SENSORS & UPLOAD ---
+// --- SCREEN 3: IMU SENSORS (WALK & TYPE SENSOR FUSION) ---
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EnrollmentIMUScreen(
     navController: NavController,
@@ -1515,45 +1525,58 @@ fun EnrollmentIMUScreen(
     gestureExtractor: GestureFeatureExtractor,
     imuExtractor: IMUFeatureExtractor
 ) {
-    var tapTL by remember { mutableStateOf(false) }
-    var tapTR by remember { mutableStateOf(false) }
-    var tapBL by remember { mutableStateOf(false) }
-    var tapBR by remember { mutableStateOf(false) }
+    var walkingText by remember { mutableStateOf("") }
+    val keyboardState = LocalZeroTrustKeyboard.current
+    val expectedPhrase = "i am typing while walking"
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
+    var cursorVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            cursorVisible = !cursorVisible
+        }
+    }
+
     Column(
-        modifier = Modifier.fillMaxSize().background(BrandBackground).padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(BrandBackground).padding(24.dp).verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(modifier = Modifier.height(20.dp))
         Text("Step 3 of 3", fontSize = 14.sp, color = BrandBlue, fontWeight = FontWeight.Bold)
-        Text("Device Tremors (IMU)", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
-        Spacer(modifier = Modifier.height(40.dp))
+        Text("Kinematic Posture (IMU)", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = BrandBlue)
+        Spacer(modifier = Modifier.height(24.dp))
 
         Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Target Acquisition", fontWeight = FontWeight.Bold, color = BrandBlue)
-                Text("Tap all 4 corner targets to record how you angle the device in your hand.", fontSize = 14.sp, color = Color.Gray)
+                Text("Walk & Type Calibration", fontWeight = FontWeight.Bold, color = BrandBlue)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Please stand up, take a few steps around the room, and type the phrase below while in motion.", fontSize = 14.sp, color = Color.Gray)
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(expectedPhrase, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = BrandBlue)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(90.dp).background(Color(0xFFF5F9FF), RoundedCornerShape(8.dp)).border(1.dp, BrandBlue, RoundedCornerShape(8.dp)).padding(12.dp)
+                        .clickable { keyboardState.openKeyboard(walkingText) { walkingText = it } },
+                    contentAlignment = Alignment.TopStart
+                ) {
+                    val displayText = if (walkingText.isEmpty()) "Start typing here...${if(cursorVisible) "|" else ""}" else "$walkingText${if(cursorVisible) "|" else ""}"
+                    Text(text = displayText, fontSize = 16.sp, color = if (walkingText.isEmpty()) Color.Gray else BrandBlue)
+                }
             }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Box(modifier = Modifier.fillMaxWidth().height(300.dp).background(BrandBackground, RoundedCornerShape(8.dp)).padding(16.dp)) {
-            Box(modifier = Modifier.align(Alignment.TopStart).size(50.dp).background(if (tapTL) Color(0xFF4CAF50) else BrandYellow, CircleShape).clickable { tapTL = true })
-            Box(modifier = Modifier.align(Alignment.TopEnd).size(50.dp).background(if (tapTR) Color(0xFF4CAF50) else BrandYellow, CircleShape).clickable { tapTR = true })
-            Box(modifier = Modifier.align(Alignment.BottomStart).size(50.dp).background(if (tapBL) Color(0xFF4CAF50) else BrandYellow, CircleShape).clickable { tapBL = true })
-            Box(modifier = Modifier.align(Alignment.BottomEnd).size(50.dp).background(if (tapBR) Color(0xFF4CAF50) else BrandYellow, CircleShape).clickable { tapBR = true })
         }
 
         Spacer(modifier = Modifier.weight(1f))
 
-        val isTapDone = tapTL && tapTR && tapBL && tapBR
+        val isWalkTestDone = walkingText == expectedPhrase
         Button(
             onClick = {
-                if (isTapDone) {
+                if (isWalkTestDone) {
+                    keyboardState.closeKeyboard()
                     coroutineScope.launch {
                         try {
                             val request = com.example.zerotrustwallet.network.EnrollmentRequest(
@@ -1564,21 +1587,17 @@ fun EnrollmentIMUScreen(
                             )
                             val response = com.example.zerotrustwallet.network.ApiClient.retrofitService.enrollBiometrics(request)
                             if (response.message.isNotEmpty()) {
-                                Toast.makeText(context, "Baseline Secured! Welcome.", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "All Systems Secured! Welcome.", Toast.LENGTH_LONG).show()
                                 navController.navigate("login") { popUpTo("enroll_keystroke") { inclusive = true } }
                             }
-                        } catch (e: retrofit2.HttpException) {
-                            // This grabs the exact JSON error message from Node.js!
-                            val errorBody = e.response()?.errorBody()?.string()
-                            Toast.makeText(context, "Backend says: $errorBody", Toast.LENGTH_LONG).show()
                         } catch (e: Exception) {
                             Toast.makeText(context, "Network Crash: ${e.message}", Toast.LENGTH_LONG).show()
                         }
                     }
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = if (isTapDone) BrandBlue else Color.LightGray),
+            colors = ButtonDefaults.buttonColors(containerColor = if (isWalkTestDone) BrandBlue else Color.LightGray),
             modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(8.dp)
-        ) { Text("SECURE MY BASELINE", color = Color.White, fontWeight = FontWeight.Bold) }
+        ) { Text("FINALIZE ENROLLMENT", color = Color.White, fontWeight = FontWeight.Bold) }
     }
 }
